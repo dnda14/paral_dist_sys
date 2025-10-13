@@ -1,0 +1,194 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+#include <sys/time.h>
+
+typedef struct list_node {
+    int data;
+    pthread_mutex_t node_mutex;
+    struct list_node* next;
+} list_node;
+
+// Variables globales
+list_node* head = NULL;
+pthread_mutex_t global_mutex;
+pthread_rwlock_t rwlock;
+
+// Parámetros de ejecución
+int n_ops, n_threads, impl_type;
+double member_frac, insert_frac, delete_frac;
+
+// Contadores globales (para distribuir operaciones)
+int ops_per_thread;
+int total_members = 0, total_inserts = 0, total_deletes = 0;
+
+// ========== Funciones básicas de lista (sincrónicas según variante) ==========
+
+int Member(int value) {
+    list_node* curr = head;
+    while (curr != NULL && curr->data < value)
+        curr = curr->next;
+    return (curr != NULL && curr->data == value);
+}
+
+int Insert(int value) {
+    list_node* curr = head;
+    list_node* pred = NULL;
+    while (curr != NULL && curr->data < value) {
+        pred = curr;
+        curr = curr->next;
+    }
+    if (curr == NULL || curr->data != value) {
+        list_node* temp = malloc(sizeof(list_node));
+        temp->data = value;
+        pthread_mutex_init(&temp->node_mutex, NULL);
+        temp->next = curr;
+        if (pred == NULL)
+            head = temp;
+        else
+            pred->next = temp;
+        return 1;
+    }
+    return 0;
+}
+
+int Delete(int value) {
+    list_node* curr = head;
+    list_node* pred = NULL;
+    while (curr != NULL && curr->data < value) {
+        pred = curr;
+        curr = curr->next;
+    }
+    if (curr != NULL && curr->data == value) {
+        if (pred == NULL)
+            head = curr->next;
+        else
+            pred->next = curr->next;
+        pthread_mutex_destroy(&curr->node_mutex);
+        free(curr);
+        return 1;
+    }
+    return 0;
+}
+
+// ========== Funciones sincronizadas según implementación ==========
+
+void* thread_work(void* rank) {
+    int my_ops = ops_per_thread;
+    for (int i = 0; i < my_ops; i++) {
+        int op_choice = rand() % 10000;  // 0-9999
+        int key = rand() % 10000;
+
+        if (op_choice < member_frac * 10000) {
+            // MEMBER
+            if (impl_type == 0) { // One Mutex global
+                pthread_mutex_lock(&global_mutex);
+                Member(key);
+                pthread_mutex_unlock(&global_mutex);
+            } else if (impl_type == 1) { // One Mutex per Node
+                list_node* curr = head;
+                if (curr != NULL) pthread_mutex_lock(&curr->node_mutex);
+                while (curr != NULL && curr->data < key) {
+                    list_node* next = curr->next;
+                    if (next != NULL) pthread_mutex_lock(&next->node_mutex);
+                    pthread_mutex_unlock(&curr->node_mutex);
+                    curr = next;
+                }
+                int result = (curr != NULL && curr->data == key);
+                if (curr != NULL) pthread_mutex_unlock(&curr->node_mutex);
+                (void) result;
+            } else { // Read-write lock
+                pthread_rwlock_rdlock(&rwlock);
+                Member(key);
+                pthread_rwlock_unlock(&rwlock);
+            }
+
+        } else if (op_choice < (member_frac + insert_frac) * 10000) {
+            // INSERT
+            if (impl_type == 0) {
+                pthread_mutex_lock(&global_mutex);
+                Insert(key);
+                pthread_mutex_unlock(&global_mutex);
+            } else if (impl_type == 1) {
+                pthread_mutex_lock(&global_mutex);
+                Insert(key);
+                pthread_mutex_unlock(&global_mutex);
+            } else {
+                pthread_rwlock_wrlock(&rwlock);
+                Insert(key);
+                pthread_rwlock_unlock(&rwlock);
+            }
+
+        } else {
+            // DELETE
+            if (impl_type == 0) {
+                pthread_mutex_lock(&global_mutex);
+                Delete(key);
+                pthread_mutex_unlock(&global_mutex);
+            } else if (impl_type == 1) {
+                pthread_mutex_lock(&global_mutex);
+                Delete(key);
+                pthread_mutex_unlock(&global_mutex);
+            } else {
+                pthread_rwlock_wrlock(&rwlock);
+                Delete(key);
+                pthread_rwlock_unlock(&rwlock);
+            }
+        }
+    }
+    return NULL;
+}
+
+// ========== Cronómetro utilitario ==========
+
+double get_time() {
+    struct timeval t;
+    gettimeofday(&t, NULL);
+    return t.tv_sec + t.tv_usec / 1e6;
+}
+
+// ========== Programa principal ==========
+
+int main(int argc, char* argv[]) {
+    if (argc != 8) {
+        fprintf(stderr, "Uso: %s <n_keys> <n_ops> <member_frac> <insert_frac> <delete_frac> <n_threads> <impl_type>\n", argv[0]);
+        return 1;
+    }
+
+    int n_keys = atoi(argv[1]);
+    n_ops = atoi(argv[2]);
+    member_frac = atof(argv[3]);
+    insert_frac = atof(argv[4]);
+    delete_frac = atof(argv[5]);
+    n_threads = atoi(argv[6]);
+    impl_type = atoi(argv[7]);
+
+    srand(1);
+
+    // Inicialización
+    pthread_mutex_init(&global_mutex, NULL);
+    pthread_rwlock_init(&rwlock, NULL);
+
+    for (int i = 0; i < n_keys; i++)
+        Insert(rand() % 10000);
+
+    pthread_t* threads = malloc(n_threads * sizeof(pthread_t));
+    ops_per_thread = n_ops / n_threads;
+
+    double start = get_time();
+
+    for (int i = 0; i < n_threads; i++)
+        pthread_create(&threads[i], NULL, thread_work, (void*)(long)i);
+
+    for (int i = 0; i < n_threads; i++)
+        pthread_join(threads[i], NULL);
+
+    double end = get_time();
+    printf("Tiempo total: %.6f segundos\n", end - start);
+
+    // Limpieza
+    pthread_mutex_destroy(&global_mutex);
+    pthread_rwlock_destroy(&rwlock);
+    free(threads);
+    return 0;
+}

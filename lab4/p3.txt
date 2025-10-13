@@ -1,0 +1,85 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <pthread.h>
+#include <sys/time.h>
+
+// ========================= VARIABLES GLOBALES =========================
+int m, n, thread_count;
+double **A, *x, *y;
+
+// ========================= FUNCIONES DE TIEMPO ========================
+double get_time() {
+    struct timeval t;
+    gettimeofday(&t, NULL);
+    return t.tv_sec + t.tv_usec / 1e6;
+}
+
+// ========================= FUNCIÓN THREAD ============================
+void* Pth_mat_vect(void* rank) {
+    long my_rank = (long) rank;
+    int local_m = m / thread_count;
+    int my_first_row = my_rank * local_m;
+    int my_last_row = (my_rank + 1) * local_m - 1;
+
+    for (int i = my_first_row; i <= my_last_row; i++) {
+        y[i] = 0.0;
+        for (int j = 0; j < n; j++)
+            y[i] += A[i][j] * x[j];
+    }
+
+    return NULL;
+}
+
+// ========================= PROGRAMA PRINCIPAL ========================
+int main(int argc, char* argv[]) {
+    if (argc != 4) {
+        fprintf(stderr, "Uso: %s <m> <n> <num_threads>\n", argv[0]);
+        exit(1);
+    }
+
+    m = atoi(argv[1]);
+    n = atoi(argv[2]);
+    thread_count = atoi(argv[3]);
+
+    // ================== RESERVAR MEMORIA ==================
+    A = malloc(m * sizeof(double*));
+    for (int i = 0; i < m; i++)
+        A[i] = malloc(n * sizeof(double));
+    x = malloc(n * sizeof(double));
+    y = malloc(m * sizeof(double));
+
+    // ================== INICIALIZAR DATOS =================
+    srand(1);
+    for (int i = 0; i < m; i++)
+        for (int j = 0; j < n; j++)
+            A[i][j] = (double)rand() / RAND_MAX;
+
+    for (int j = 0; j < n; j++)
+        x[j] = (double)rand() / RAND_MAX;
+
+    pthread_t* thread_handles = malloc(thread_count * sizeof(pthread_t));
+
+    // ================== MEDIR TIEMPO ======================
+    double start = get_time();
+
+    for (long thread = 0; thread < thread_count; thread++)
+        pthread_create(&thread_handles[thread], NULL, Pth_mat_vect, (void*)thread);
+
+    for (int thread = 0; thread < thread_count; thread++)
+        pthread_join(thread_handles[thread], NULL);
+
+    double end = get_time();
+    double elapsed = end - start;
+
+    printf("m=%d, n=%d, threads=%d, tiempo=%.6f segundos\n", m, n, thread_count, elapsed);
+
+    // ================== LIBERAR MEMORIA ===================
+    for (int i = 0; i < m; i++)
+        free(A[i]);
+    free(A);
+    free(x);
+    free(y);
+    free(thread_handles);
+
+    return 0;
+}
