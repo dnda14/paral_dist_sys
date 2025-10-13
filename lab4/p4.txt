@@ -1,0 +1,127 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <pthread.h>
+#include <ctype.h>
+#include <time.h>
+
+#define MAX 50
+
+pthread_mutex_t file_mutex;
+pthread_mutex_t print_mutex;
+int lines_remaining = 1;
+
+void tokenize_manual(char *line, int thread_id) {
+    int token_count = 0;
+    int i = 0;
+    int token_start = -1;
+    int in_token = 0;
+
+    while (line[i] != '\0') {
+        if (!isspace(line[i]) && !in_token) {
+            token_start = i;
+            in_token = 1;
+        } else if (isspace(line[i]) && in_token) {
+            line[i] = '\0';
+            token_count++;
+            pthread_mutex_lock(&print_mutex);
+            printf("Hilo %d > token %d = %s\n", thread_id, token_count, &line[token_start]);
+            pthread_mutex_unlock(&print_mutex);
+            in_token = 0;
+        }
+        i++;
+    }
+
+    if (in_token) {
+        token_count++;
+        pthread_mutex_lock(&print_mutex);
+        printf("Hilo %d > token %d = %s\n", thread_id, token_count, &line[token_start]);
+        pthread_mutex_unlock(&print_mutex);
+    }
+}
+
+void *process_lines(void *arg) {
+    int thread_id = *((int *)arg);
+    char line[MAX];
+
+    while (1) {
+        pthread_mutex_lock(&file_mutex);
+        if (!lines_remaining) {
+            pthread_mutex_unlock(&file_mutex);
+            break;
+        }
+
+        if (fgets(line, MAX, stdin) == NULL) {
+            lines_remaining = 0;
+            pthread_mutex_unlock(&file_mutex);
+            break;
+        }
+        pthread_mutex_unlock(&file_mutex);
+
+        // Eliminar salto de línea
+        line[strcspn(line, "\n")] = 0;
+
+        // Si el usuario escribe "exit", detener
+        if (strcmp(line, "exit") == 0) {
+            pthread_mutex_lock(&print_mutex);
+            printf("Hilo %d > salida detectada, finalizando...\n", thread_id);
+            pthread_mutex_unlock(&print_mutex);
+            lines_remaining = 0;
+            break;
+        }
+
+        // Tiempo de inicio
+        struct timespec start, end;
+        clock_gettime(CLOCK_MONOTONIC, &start);
+
+        pthread_mutex_lock(&print_mutex);
+        printf("Hilo %d > línea: %s\n", thread_id, line);
+        pthread_mutex_unlock(&print_mutex);
+
+        tokenize_manual(line, thread_id);
+
+        // Tiempo de fin
+        clock_gettime(CLOCK_MONOTONIC, &end);
+
+        double elapsed_ms = (end.tv_sec - start.tv_sec) * 1000.0 +
+                            (end.tv_nsec - start.tv_nsec) / 1e6;
+
+        pthread_mutex_lock(&print_mutex);
+        printf("  Hilo %d > tiempo: %.3f ms\n\n", thread_id, elapsed_ms);
+        pthread_mutex_unlock(&print_mutex);
+    }
+
+    return NULL;
+}
+
+int main(int argc, char *argv[]) {
+    if (argc != 2) {
+        printf("Uso: %s <número_de_hilos>\n", argv[0]);
+        return 1;
+    }
+
+    int num_threads = atoi(argv[1]);
+    pthread_t threads[num_threads];
+    int thread_ids[num_threads];
+
+    pthread_mutex_init(&file_mutex, NULL);
+    pthread_mutex_init(&print_mutex, NULL);
+
+    printf("\n=== Procesamiento iniciado con %d hilo(s) ===\n", num_threads);
+    printf("Escribe líneas para tokenizar. Escribe 'exit' para terminar.\n\n");
+
+    for (int i = 0; i < num_threads; i++) {
+        thread_ids[i] = i;
+        pthread_create(&threads[i], NULL, process_lines, &thread_ids[i]);
+    }
+
+    for (int i = 0; i < num_threads; i++) {
+        pthread_join(threads[i], NULL);
+    }
+
+    pthread_mutex_destroy(&file_mutex);
+    pthread_mutex_destroy(&print_mutex);
+
+    printf("\n=== Procesamiento finalizado ===\n");
+    return 0;
+}
